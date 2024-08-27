@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  zkp_app:
+    build: .
+    ports:
+      - '8000:8000'
+    volumes:
+      - ./zkp_rocksdb:/zkp_rocksdb
+    environment:
+      - RUST_LOG=info
+    restart: unless-stopped

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: zkp-app-service
+spec:
+  type: LoadBalancer # Use ClusterIP if you only want internal access
+  ports:
+    - port: 80
+      targetPort: 8000
+  selector:
+    app: zkp-app

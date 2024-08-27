@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: zkp-rocksdb-pv
+spec:
+  capacity:
+    storage: 1Gi # Adjust according to your needs
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: '/mnt/data/zkp_rocksdb' # Adjust for your environment
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zkp-rocksdb-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi # Match the size with PersistentVolume

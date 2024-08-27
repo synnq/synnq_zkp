@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zkp-app-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zkp-app
+  template:
+    metadata:
+      labels:
+        app: zkp-app
+    spec:
+      containers:
+        - name: zkp-app
+          image: zkp-app:latest # Make sure this matches your Docker image tag
+          ports:
+            - containerPort: 8000
+          volumeMounts:
+            - mountPath: '/zkp_rocksdb'
+              name: zkp-rocksdb-storage
+          env:
+            - name: RUST_LOG
+              value: 'info'
+      volumes:
+        - name: zkp-rocksdb-storage
+          persistentVolumeClaim:
+            claimName: zkp-rocksdb-pvc
