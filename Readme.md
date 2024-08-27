@@ -1,4 +1,4 @@
-# ZKP Proof Generation and Verification
+# SYNNQ - ZKP Proof Generation and Verification
 
 This repository contains a Rocket-based Rust application that generates and verifies zero-knowledge proofs (ZKP) using Bulletproofs. The application uses RocksDB for persistent storage of proofs and verification results.
 
@@ -27,7 +27,7 @@ This repository contains a Rocket-based Rust application that generates and veri
 1. Clone the repository:
 
    ```bash
-   git clone https://github.com/yourusername/zkp-app.git
+   git clone https://github.com/synnq/zkp-app.git
    cd zkp-app
    ```
 
