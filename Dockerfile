@@ -23,4 +23,4 @@ COPY --from=builder /usr/src/app/target/release/zkp_app /usr/local/bin/zkp_app
 EXPOSE 8000
 
 # Set the default command to run the application
-CMD ["zkp_app"]
+CMD ["./synnq_zkp"]
