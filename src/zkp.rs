@@ -3,8 +3,9 @@ use bulletproofs::{ BulletproofGens, PedersenGens };
 use curve25519_dalek_ng::scalar::Scalar;
 use merlin::Transcript;
 use rand::rngs::OsRng;
+use std::error::Error;
 
-pub fn generate_proof(secret: u64) -> Result<(Vec<u8>, Scalar), Box<dyn std::error::Error>> {
+pub fn generate_proof(secret: u64) -> Result<(Vec<u8>, Scalar), Box<dyn Error>> {
     let mut rng = OsRng;
     let pedersen_gens = PedersenGens::default();
     let bp_gens = BulletproofGens::new(64, 1);
@@ -30,11 +31,7 @@ pub fn generate_proof(secret: u64) -> Result<(Vec<u8>, Scalar), Box<dyn std::err
     Ok((proof.to_bytes(), blinding))
 }
 
-pub fn verify_proof(
-    proof: &[u8],
-    secret: u64,
-    blinding: Scalar
-) -> Result<bool, Box<dyn std::error::Error>> {
+pub fn verify_proof(proof: &[u8], secret: u64, blinding: Scalar) -> Result<bool, Box<dyn Error>> {
     let pedersen_gens = PedersenGens::default();
     let bp_gens = BulletproofGens::new(64, 1);
     let mut transcript = Transcript::new(b"ExampleTranscript");
