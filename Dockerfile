@@ -1,5 +1,13 @@
-# Use the official Rust image as a base
-FROM rust:1.69 as builder
+# Use the official Rust image as a base with the latest version
+FROM rust:1.70 as builder
+
+# Install the required dependencies for RocksDB
+RUN apt-get update && apt-get install -y \
+    libclang-dev \
+    clang \
+    llvm-dev \
+    librocksdb-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # Create a new directory for the project
 WORKDIR /usr/src/app
@@ -8,19 +16,19 @@ WORKDIR /usr/src/app
 COPY . .
 
 # Build the application in release mode
-RUN cargo build --release
+RUN cargo build --release && ls -l /usr/src/app/target/release/
 
 # Use a minimal base image to run the application
 FROM debian:buster-slim
 
-# Install RocksDB dependencies
+# Install RocksDB runtime dependencies
 RUN apt-get update && apt-get install -y librocksdb-dev && rm -rf /var/lib/apt/lists/*
 
 # Copy the built binary from the builder stage
-COPY --from=builder /usr/src/app/target/release/zkp_app /usr/local/bin/zkp_app
+COPY --from=builder /usr/src/app/target/release/synnq_zkp /usr/local/bin/synnq_zkp
 
 # Expose the application port
 EXPOSE 8000
 
 # Set the default command to run the application
-CMD ["./synnq_zkp"]
+CMD ["/usr/local/bin/synnq_zkp"]
