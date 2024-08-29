@@ -114,9 +114,9 @@ fn verify_proof_route(
     };
 
     // Check if the proof has already been verified
-    if verified_at.is_some() {
-        return Json(VerifyResponse { valid: false });
-    }
+    // if verified_at.is_some() {
+    //     return Json(VerifyResponse { valid: false });
+    // }
 
     // Convert blinding factor back to Scalar
     let blinding_bytes = hex::decode(&stored_blinding).expect("Failed to decode blinding");
