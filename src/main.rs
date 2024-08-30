@@ -1,7 +1,7 @@
 #[macro_use]
 extern crate rocket;
 
-use rocket::serde::{ json::Json };
+use rocket::serde::json::Json;
 use serde::{ Deserialize, Serialize };
 use rocksdb::{ DB, Options };
 use std::sync::Mutex;
@@ -41,6 +41,13 @@ struct ReceiptResponse {
     blinding: String,
     valid: bool,
     verified_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DeleteRequest {
+    secret: u64,
+    proof: Vec<u8>,
+    blinding: String,
 }
 
 struct RocksDBWrapper {
@@ -102,7 +109,7 @@ fn verify_proof_route(
         &proof_data
     );
 
-    let (stored_proof, stored_blinding, verified_at) = match result {
+    let (stored_proof, stored_blinding, _verified_at) = match result {
         Ok(data) => data,
         Err(_) => {
             // Fallback for old format: deserialize as a tuple of two elements (proof, blinding)
@@ -166,10 +173,64 @@ fn get_receipt_route(
     )
 }
 
+#[delete("/delete", format = "json", data = "<delete_request>")]
+fn delete_proof_route(
+    db_wrapper: &rocket::State<RocksDBWrapper>,
+    delete_request: Json<DeleteRequest>
+) -> Json<VerifyResponse> {
+    // Create the proof key from the secret
+    let proof_key = format!("proof_{}", delete_request.secret);
+
+    // Try to retrieve the proof data from RocksDB
+    let proof_data = match db_wrapper.db.lock().unwrap().get(proof_key.as_bytes()) {
+        Ok(Some(data)) => data,
+        Ok(None) => {
+            // Proof not found, return a response indicating failure
+            return Json(VerifyResponse { valid: false });
+        }
+        Err(_) => {
+            // Handle RocksDB errors (optional logging or error response)
+            return Json(VerifyResponse { valid: false });
+        }
+    };
+
+    // Deserialize the stored proof, blinding, and verification timestamp
+    let result: Result<(Vec<u8>, String, Option<DateTime<Utc>>), _> = serde_json::from_slice(
+        &proof_data
+    );
+
+    let (_stored_proof, stored_blinding, _) = match result {
+        Ok(data) => data,
+        Err(_) => {
+            // Fallback for old format: deserialize as a tuple of two elements (proof, blinding)
+            let (stored_proof, stored_blinding): (Vec<u8>, String) = serde_json
+                ::from_slice(&proof_data)
+                .expect("Failed to deserialize proof data in old format");
+            (stored_proof, stored_blinding, None)
+        }
+    };
+
+    // Convert blinding factor back to Scalar
+    let blinding_bytes = hex::decode(&stored_blinding).expect("Failed to decode blinding");
+    let blinding = Scalar::from_bits(
+        blinding_bytes.try_into().expect("Failed to convert to scalar")
+    );
+
+    // Verify the proof
+    let valid = zkp::verify_proof(&delete_request.proof, delete_request.secret, blinding).unwrap();
+
+    if valid {
+        // Proof is valid, delete it from RocksDB
+        db_wrapper.db.lock().unwrap().delete(proof_key.as_bytes()).unwrap();
+    }
+
+    Json(VerifyResponse { valid })
+}
+
 #[launch]
 fn rocket() -> _ {
     // Initialize RocksDB
-    let db_opts = Options::default();
+    let _db_opts = Options::default();
     let db = DB::open_default("database/db").unwrap(); // Use a path that maps to a Docker volume
 
     rocket
@@ -177,5 +238,8 @@ fn rocket() -> _ {
         .manage(RocksDBWrapper {
             db: Mutex::new(db),
         })
-        .mount("/", routes![generate_proof_route, verify_proof_route, get_receipt_route])
+        .mount(
+            "/",
+            routes![generate_proof_route, verify_proof_route, get_receipt_route, delete_proof_route]
+        )
 }
