@@ -27,8 +27,6 @@ struct ProofResponse {
 #[derive(Serialize, Deserialize)]
 struct VerifyRequest {
     secret: String,
-    proof: Vec<u8>,
-    blinding: String,
 }
 
 #[derive(Serialize, Deserialize)]
