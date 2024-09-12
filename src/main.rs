@@ -9,7 +9,8 @@ use curve25519_dalek_ng::scalar::Scalar;
 use hex;
 use rocket::serde::json::serde_json;
 use chrono::{ Utc, DateTime };
-
+use serde_json::json;
+use uuid::Uuid;
 mod zkp;
 
 #[derive(Serialize, Deserialize)]
@@ -54,15 +55,17 @@ struct RocksDBWrapper {
     db: RwLock<DB>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct AggregateRequest {
+    secrets: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AggregateResponse {
+    aggregated_proof: Vec<u8>,
+}
+
 /// Store the proof in the RocksDB database.
-///
-/// The proof is stored with the associated blinding factor and a
-/// `None` timestamp, indicating that the proof has not been verified
-/// yet.
-///
-/// # Errors
-/// Returns an error if there is an issue serializing the proof data
-/// or storing it in the database.
 fn store_proof(db: &DB, key: &str, proof: Vec<u8>, blinding: String) -> Result<(), String> {
     let proof_data = serde_json
         ::to_string(&(proof, blinding, None::<DateTime<Utc>>))
@@ -73,13 +76,6 @@ fn store_proof(db: &DB, key: &str, proof: Vec<u8>, blinding: String) -> Result<(
 }
 
 /// Retrieves a proof from the RocksDB database.
-///
-/// The proof is retrieved with its associated blinding factor and
-/// verification timestamp.
-///
-/// # Errors
-/// Returns an error if the proof is not found in the database or if
-/// there is an issue deserializing the proof data.
 fn retrieve_proof(db: &DB, key: &str) -> Result<(Vec<u8>, String, Option<DateTime<Utc>>), String> {
     let proof_data = db
         .get(key.as_bytes())
@@ -88,22 +84,20 @@ fn retrieve_proof(db: &DB, key: &str) -> Result<(Vec<u8>, String, Option<DateTim
 
     serde_json
         ::from_slice(&proof_data)
-        .map_err(|e| { format!("Error deserializing proof data: {}", e) })
+        .map_err(|e| format!("Error deserializing proof data: {}", e))
 }
 
 /// Handles the `/generate` endpoint.
-///
-/// This endpoint takes a `ProofRequest` JSON payload, generates a zero-knowledge
-/// proof using the provided secret, stores the proof in the RocksDB database,
-/// and returns a JSON response with the proof and blinding factor.
-///
-/// # Errors
-/// Returns an error if the proof generation or storage fails.
 #[post("/generate", format = "json", data = "<proof_request>")]
 fn generate_proof_route(
     db_wrapper: &rocket::State<RocksDBWrapper>,
     proof_request: Json<ProofRequest>
 ) -> Result<Json<ProofResponse>, String> {
+    // Validate the secret as a UUID
+    if Uuid::parse_str(&proof_request.secret).is_err() {
+        return Err("Invalid secret format".to_string());
+    }
+
     // Generate a zero-knowledge proof using the provided secret
     let (proof, blinding) = zkp
         ::generate_proof(proof_request.secret.clone())
@@ -121,18 +115,16 @@ fn generate_proof_route(
 }
 
 /// Handles the `/verify` endpoint.
-///
-/// This endpoint takes a `VerifyRequest` JSON payload, verifies the provided
-/// proof using the stored blinding factor, and returns a JSON response with a
-/// boolean indicating whether the proof is valid or not.
-///
-/// # Errors
-/// Returns an error if the proof verification fails.
 #[post("/verify", format = "json", data = "<verify_request>")]
 fn verify_proof_route(
     db_wrapper: &rocket::State<RocksDBWrapper>,
     verify_request: Json<VerifyRequest>
 ) -> Json<VerifyResponse> {
+    // Validate the secret as UUID
+    if Uuid::parse_str(&verify_request.secret).is_err() {
+        return Json(VerifyResponse { valid: false });
+    }
+
     let proof_key = format!("proof_{}", verify_request.secret);
     let (stored_proof, stored_blinding, _verified_at) = match
         retrieve_proof(&db_wrapper.db.read().unwrap(), &proof_key)
@@ -144,13 +136,25 @@ fn verify_proof_route(
     };
 
     // Decode the stored blinding factor
-    let blinding_bytes = hex::decode(&stored_blinding).expect("Failed to decode blinding");
+    let blinding_bytes = match hex::decode(&stored_blinding) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return Json(VerifyResponse { valid: false });
+        }
+    };
     let blinding = Scalar::from_bits(
         blinding_bytes.try_into().expect("Failed to convert to scalar")
     );
 
     // Verify the proof
-    let valid = zkp::verify_proof(&stored_proof, verify_request.secret.clone(), blinding).unwrap();
+    // main.rs
+
+    let valid = match zkp::verify_proof(&stored_proof, verify_request.secret.clone(), blinding) {
+        Ok(result) => result,
+        Err(_) => {
+            return Json(VerifyResponse { valid: false });
+        }
+    };
 
     // If the proof is valid, update the verification timestamp
     if valid {
@@ -160,43 +164,40 @@ fn verify_proof_route(
         db_wrapper.db.write().unwrap().put(proof_key.as_bytes(), new_data.as_bytes()).unwrap();
     }
 
-    // Return a JSON response with the verification result
     Json(VerifyResponse { valid })
 }
 
-/// Returns the receipt for the given secret, which includes the proof,
-/// blinding factor, verification result, and timestamp.
-///
-/// The receipt is stored in RocksDB with the key format
-/// `proof_<secret>` and `verification_<secret>`.
-///
-/// # Errors
-/// Returns `None` if the receipt is not found in RocksDB.
+/// Returns the receipt for the given secret.
 #[get("/receipt/<secret>")]
 fn get_receipt_route(
     db_wrapper: &rocket::State<RocksDBWrapper>,
-    secret: u64
+    secret: String
 ) -> Option<Json<ReceiptResponse>> {
+    // Validate the secret as UUID
+    if Uuid::parse_str(&secret).is_err() {
+        return None;
+    }
+
     let proof_key = format!("proof_{}", secret);
     let (proof, blinding, verified_at) = retrieve_proof(
         &db_wrapper.db.read().unwrap(),
         &proof_key
     ).ok()?;
+
+    // Check if the proof was verified
     let verification_key = format!("verification_{}", secret);
-    let valid: bool = serde_json
-        ::from_slice(&db_wrapper.db.read().unwrap().get(verification_key.as_bytes()).ok()??)
-        .ok()?;
+    let valid: bool = db_wrapper.db
+        .read()
+        .unwrap()
+        .get(verification_key.as_bytes())
+        .ok()?
+        .map(|data| serde_json::from_slice(&data).unwrap_or(false))
+        .unwrap_or(false);
+
     Some(Json(ReceiptResponse { proof, blinding, valid, verified_at }))
 }
 
-/// Handles the `/delete` endpoint, which deletes a proof from the database.
-///
-/// The endpoint takes a `DeleteRequest` JSON payload, which contains the secret
-/// and the proof to be deleted. The function first verifies the proof using the
-/// stored blinding factor and the secret from the request. If the proof is valid,
-/// it deletes the proof from the database. The function returns a JSON response
-/// with the verification result.
-
+/// Handles the `/delete` endpoint.
 #[delete("/delete", format = "json", data = "<delete_request>")]
 fn delete_proof_route(
     db_wrapper: &rocket::State<RocksDBWrapper>,
@@ -211,39 +212,89 @@ fn delete_proof_route(
             return Json(VerifyResponse { valid: false });
         }
     };
-    let blinding_bytes = hex::decode(&stored_blinding).expect("Failed to decode blinding");
+
+    // Decode the blinding factor
+    let blinding_bytes = match hex::decode(&stored_blinding) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return Json(VerifyResponse { valid: false });
+        }
+    };
     let blinding = Scalar::from_bits(
         blinding_bytes.try_into().expect("Failed to convert to scalar")
     );
+
+    // Verify the proof before deletion
     let valid = zkp
         ::verify_proof(&delete_request.proof, delete_request.secret.clone(), blinding)
         .unwrap();
+
     if valid {
         db_wrapper.db.write().unwrap().delete(proof_key.as_bytes()).unwrap();
     }
+
     Json(VerifyResponse { valid })
 }
 
-// The main entry point of the application.
+/// Handles the `/aggregate` endpoint.
+///
+/// This endpoint takes an `AggregateRequest` JSON payload, retrieves the
+/// corresponding proofs from the RocksDB database, aggregates them, and returns
+/// a single aggregated proof.
+///
+/// # Errors
+/// Returns an error if proof retrieval or aggregation fails.
+#[post("/aggregate", format = "json", data = "<aggregate_request>")]
+fn aggregate_proofs_route(
+    db_wrapper: &rocket::State<RocksDBWrapper>,
+    aggregate_request: Json<AggregateRequest>
+) -> Result<Json<AggregateResponse>, String> {
+    let mut proofs = Vec::new();
+
+    // Loop over each secret, retrieve the associated proof, and add it to the list.
+    for secret in &aggregate_request.secrets {
+        let proof_key = format!("proof_{}", secret);
+        let (stored_proof, _blinding, _verified_at) = match
+            retrieve_proof(&db_wrapper.db.read().unwrap(), &proof_key)
+        {
+            Ok(data) => data,
+            Err(_) => {
+                return Err(format!("Failed to retrieve proof for secret: {}", secret));
+            }
+        };
+        proofs.push(stored_proof);
+    }
+
+    // Aggregate the proofs
+    let aggregated_proof = match zkp::aggregate_proofs(proofs) {
+        Ok(proof) => proof,
+        Err(e) => {
+            return Err(format!("Error aggregating proofs: {}", e));
+        }
+    };
+
+    // Return the aggregated proof
+    Ok(Json(AggregateResponse { aggregated_proof }))
+}
+
+/// The main entry point of the application.
 #[launch]
 fn rocket() -> _ {
-    // Initialize RocksDB options
-    let _db_opts = Options::default();
-
-    // Open the database in "database/db"
+    let db_opts = Options::default();
     let db = DB::open_default("database/db").unwrap();
-
-    // Create a new instance of the RocksDB wrapper
     let db_wrapper = RocksDBWrapper { db: RwLock::new(db) };
 
-    // Build the Rocket application
     rocket
         ::build()
-        // Mount the routes at "/"
         .mount(
             "/",
-            routes![generate_proof_route, verify_proof_route, get_receipt_route, delete_proof_route]
+            routes![
+                generate_proof_route,
+                verify_proof_route,
+                get_receipt_route,
+                delete_proof_route,
+                aggregate_proofs_route
+            ]
         )
-        // Manage the RocksDB wrapper instance
         .manage(db_wrapper)
 }
